@@ -20,20 +20,28 @@
 | **依赖数量** | 3 个轻量包 | 10+ 含浏览器内核 | 10+ 含浏览器内核 | 2 个 |
 | **AI Agent 集成** | ✅ SKILL.md | ❌ | ✅ MCP Server | ✅ SKILL.md |
 | **噪音清理** | ✅ 自动 | ❌ | ❌ | ❌ |
+| **自动内容标签** | ✅ 关键词匹配 | ❌ | ❌ | ❌ |
+| **抓取失败降级** | ✅ 自动保存链接存根 | ❌ | ❌ | ❌ |
+| **JSON 驱动配置** | ✅ config.json | ❌ | ❌ | ❌ |
+| **最小化 LLM 步骤** | ✅ 只执行脚本+报告 | — | — | ⚠️ 多步 LLM 判断 |
 
 ### ✨ 核心优势
 
 1. **极简轻量** — 不用浏览器、不装 Playwright/Camoufox。三个轻量 Python 包搞定，安装体积不到 5MB（其他方案动辄 500MB+）
 
-2. **直存本地或云端 Obsidian** — 直接写入你的 Obsidian vault 的 0-INBOX 目录，无论 vault 在本地磁盘还是 iCloud/OneDrive 等云端同步盘，一篇文章一个 .md 文件，无需手动搬运
+2. **直存本地或云端 Obsidian** — 直接写入你的 Obsidian vault 的 0-INBOX 目录，无论 vault 在本地磁盘还是 iCloud/OneDrive 等云端同步盘
 
-3. **几乎零配置** — 不用填 API Key，不用配 MCP Server。只需改一行 vault 路径即可使用
+3. **JSON 驱动配置** — 所有可变参数集中在 `config.json`，vault 路径、噪音正则、失败阈值一键修改。本地覆盖用 `config.local.json`（已 gitignore）
 
-4. **AI Agent 友好** — 专为 Claude Code / OpenClaw 设计的 SKILL.md，AI 助手可直接理解并执行
+4. **自动内容标签** — `tags_keyword_map.json` 定义关键词→标签映射，脚本自动扫描文章内容打标签。支持 `.local.json` 追加个人关键词
 
-5. **噪音智能清理** — 自动去除微信公众号的"预览时标签不可点"、"继续滑动看下一个"等干扰文本
+5. **标签自动规范化** — 脚本内置规范化函数：平台名保大小写（`Anthropic`、`OpenAI`），产品名全小写连字符（`claude-code`），中文原样保留
 
-6. **结构化输出** — YAML frontmatter 包含标题、作者、发布日期、来源 URL、标签，Dataview 友好
+6. **抓取失败自动降级** — 正文不足 2000 字符时自动保存链接存根，无需 LLM 判断。2000~5000 字符发出警告
+
+7. **最小化 LLM 操作** — AI Agent 只需执行一条命令，脚本输出结构化结果直接转述。无需 LLM 判断标签、规范化格式、处理失败
+
+8. **AI Agent 友好** — 专为 Claude Code / OpenClaw 设计的 SKILL.md，AI 助手可直接理解并执行
 
 ### 设计哲学
 
@@ -41,6 +49,7 @@
 
 - **不用浏览器** → 少量使用无反爬需求，省下 500MB 安装空间
 - **图片不下载** → 保留 CDN 链接，Obsidian 在线阅读无压力
+- **JSON 配一切** → 脚本逻辑固定，行为由 JSON 数据驱动，LLM 零判断
 - **不追求 100% 还原** → 追求 90% 场景下的 100% 可靠
 
 适合人群：每周存几篇公众号文章到 Obsidian 知识库的普通用户。
@@ -59,6 +68,10 @@ git clone https://github.com/leisuremale/wechat-to-obsidian.git \
 
 # 2. 安装依赖
 pip3 install requests beautifulsoup4 markdownify
+
+# 3. 配置你的 Obsidian vault 路径
+#    编辑 config.json 中的 obsidian.vault_path
+#    或创建 config.local.json 覆盖（推荐，不会被 git 推送）
 ```
 
 ## 使用
@@ -70,10 +83,12 @@ pip3 install requests beautifulsoup4 markdownify
 https://mp.weixin.qq.com/s/xxxxx
 ```
 
+AI 助手自动执行脚本，脚本自动完成：抓取 → 解析 → 标签 → 规范化 → 失败判断 → 保存。
+
 ### 命令行使用
 
 ```bash
-# 直接保存到 Obsidian 0-INBOX
+# 直接保存到 Obsidian 0-INBOX（含自动标签）
 python3 scripts/article_to_md.py "https://mp.weixin.qq.com/s/xxxxx"
 
 # 先预览，不保存
@@ -84,6 +99,9 @@ python3 scripts/article_to_md.py "https://mp.weixin.qq.com/s/xxxxx" -o ~/Desktop
 
 # 打印到终端
 python3 scripts/article_to_md.py "https://mp.weixin.qq.com/s/xxxxx" --print
+
+# 禁用自动标签
+python3 scripts/article_to_md.py "https://mp.weixin.qq.com/s/xxxxx" --no-auto-tag
 ```
 
 ## 输出示例
@@ -96,7 +114,7 @@ platform: wechat
 author: 腾讯研究院
 publish_date: 2026-04-15
 saved_date: 2026-05-01
-tags: [inbox, article]
+tags: [inbox, article, AI, LLM, 知识管理]
 ---
 
 # AI 时代的个人知识管理
@@ -108,37 +126,57 @@ tags: [inbox, article]
 
 文件保存为：`0-INBOX/2026-04-15_AI时代的个人知识管理.md`
 
-## ⚙️ 配置（首次使用必读）
+## ⚙️ 配置说明
 
-> **⚠️ 使用前必须修改 Obsidian vault 路径！** 脚本内置的是我个人的 iCloud vault 路径，不修改会存到错误位置。
+### config.json（通用配置）
 
-编辑 `scripts/article_to_md.py`，修改顶部的配置：
-
-```python
-# 改成你自己的 Obsidian vault 根目录
-OBSIDIAN_VAULT = os.path.expanduser("~/Documents/MyObsidianVault")
-
-# vault 内的 inbox 子目录（不改也行）
-INBOX_DIR = os.path.join(OBSIDIAN_VAULT, "0-INBOX")
+```json
+{
+  "obsidian":           { "vault_path": "~/Documents/MyVault", "inbox_dir": "0-INBOX" },
+  "fetching":           { "user_agent": "...", "timeout": 30 },
+  "failure":            { "min_content_chars": 2000, "warn_content_chars": 5000 },
+  "tags":               { "default": ["inbox", "article"], "preserve_case": [...] },
+  "noise_patterns":     ["预览时标签不可点", ...]
+}
 ```
 
-常见 vault 路径参考：
+本地覆盖：创建 `config.local.json`，只写要覆盖的字段即可（深度合并）。
 
-| 场景 | 路径示例 |
-|------|---------|
-| 本地 vault | `~/Documents/MyVault` |
-| iCloud vault | `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/你的vault名` |
-| Obsidian Sync | `~/Documents/你的vault名` |
+### tags_keyword_map.json（标签关键词映射）
+
+```json
+{
+  "keyword_tags": {
+    "Anthropic": ["Anthropic"],
+    "Claude": ["Anthropic", "claude-code"],
+    "产品经理": ["产品经理"],
+    ...
+  }
+}
+```
+
+本地追加：创建 `tags_keyword_map.local.json`，新关键词会合并到基础映射中。
+
+### 标签规范化规则（脚本内置）
+
+| 类型 | 规则 | 示例 |
+|------|------|------|
+| 平台/公司名 | 保持原样 | `Anthropic`, `OpenAI`, `Google` |
+| 产品/技术名 | 全小写 + 连字符 | `claude-code`, `prompt-engineering` |
+| 中文标签 | 保持原样 | `产品经理`, `知识管理` |
 
 ## 项目结构
 
 ```
 wechat-to-obsidian/
-├── SKILL.md              # AI Agent 指令文件
-├── README.md             # 本文件
+├── SKILL.md                    # AI Agent 指令文件
+├── SKILL.local.md              # 本地 LLM 专属指引（gitignore）
+├── README.md                   # 本文件
+├── config.json                 # 通用配置
+├── tags_keyword_map.json       # 标签关键词映射
 ├── .gitignore
 └── scripts/
-    └── article_to_md.py  # 核心转换脚本
+    └── article_to_md.py        # 核心转换脚本
 ```
 
 ## 依赖

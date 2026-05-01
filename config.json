@@ -1,0 +1,40 @@
+{
+  "_说明": "通用默认配置。本地覆盖请创建 config.local.json（已被 .gitignore 忽略）",
+
+  "obsidian": {
+    "vault_path": "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Le",
+    "inbox_dir": "0-INBOX"
+  },
+
+  "fetching": {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept_language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "timeout": 30
+  },
+
+  "failure": {
+    "min_content_chars": 2000,
+    "warn_content_chars": 5000,
+    "on_failure": "save_link_stub"
+  },
+
+  "tags": {
+    "default": ["inbox", "article"],
+    "preserve_case": ["Anthropic", "OpenAI", "Google", "DeepSeek", "OpenClaw", "GitHub", "Microsoft", "Meta", "Apple"],
+    "auto_tag": true
+  },
+
+  "noise_patterns": [
+    "预览时标签不可点",
+    "继续滑动看下一个",
+    "轻触阅读原文",
+    "微信扫一扫",
+    "关注该公众号",
+    "点赞.*在看",
+    "分享.*收藏",
+    "喜欢此内容的人还喜欢",
+    "修改于",
+    "收录于合集"
+  ]
+}

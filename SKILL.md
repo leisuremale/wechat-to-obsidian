@@ -5,7 +5,7 @@ description: Convert WeChat Official Account (微信公众号) articles to Markd
 
 # WeChat to Obsidian Skill
 
-> 📌 如存在 `SKILL.local.md`，先读取其中的本地个性化规则（标签规范、失败处理等），再执行本文件中的通用流程。
+> 📌 如有 `SKILL.local.md` 或 `config.local.json`/`tags_keyword_map.local.json`，优先读取本地规则。
 
 将微信公众号文章转换为 Markdown 格式，自动存入 Obsidian vault 的 `0-INBOX` 目录。
 
@@ -14,40 +14,37 @@ description: Convert WeChat Official Account (微信公众号) articles to Markd
 - 用户提供 `mp.weixin.qq.com` 链接
 - 用户说"保存到 Obsidian"、"转成 Markdown"、"收藏这篇文章"等
 
-## 工作流程
+## 工作流程（最小化 LLM 步骤）
 
-### 1. 确认 URL
+> 脚本已内置：URL 验证、自动标签、标签规范化、抓取失败降级。LLM 只需执行脚本 + 报告结果。
 
-验证是有效的微信公众号文章链接。
-
-### 2. 运行转换脚本
+### 1. 运行转换脚本
 
 ```bash
-python3 ~/.openclaw/workspace/skills/wechat-to-obsidian/scripts/article_to_md.py "<文章URL>"
+python3 ./skills/wechat-to-obsidian/scripts/article_to_md.py "<文章URL>"
 ```
 
-脚本会自动：
-- 抓取文章内容（服务端渲染，无需浏览器）
-- 提取标题、公众号名称、发布时间
-- 修复懒加载图片
-- 转换为 Markdown
-- 清理噪音文本
-- 添加 YAML frontmatter
-- 保存到 Obsidian 0-INBOX
+### 2. 报告结果
 
-### 3. 预览（可选）
+脚本输出已经包含全部关键信息，LLM 直接转述即可：
 
-```bash
-python3 ~/.openclaw/workspace/skills/wechat-to-obsidian/scripts/article_to_md.py "<URL>" --dry-run
-```
+- ✅ 成功：告知用户标题、保存位置、标签
+- ⚠️ 链接存根：告知用户正文抓取失败，已保存原文链接
+- ❌ 不支持：告知用户链接格式不支持
 
-### 4. 报告结果
+## 脚本自动完成的功能
 
-告诉用户文章标题和保存位置。
+| 动作 | 机制 |
+|------|------|
+| URL 验证 | 脚本内置 `is_wechat_url()` |
+| 内容标签 | `tags_keyword_map.json` 关键词自动匹配 |
+| 标签规范化 | 脚本内置 `normalize_tag()`（平台名大写、产品小写连字符、中文保留） |
+| 抓取失败降级 | 字符数 < 2000 → 自动保存链接存根 |
+| 噪音清理 | `config.json` 中 `noise_patterns` 正则列表 |
 
 ## 输出格式
 
-保存位置: `你的vault/0-INBOX/YYYY-MM-DD_标题.md`
+保存位置: `your-vault/0-INBOX/YYYY-MM-DD_标题.md`
 
 ```markdown
 ---
@@ -57,33 +54,24 @@ platform: wechat
 author: 公众号名称
 publish_date: 2026-01-15
 saved_date: 2026-05-01
-tags: [inbox, article]
+tags: [inbox, article, AI, claude-code]
 ---
-
-# 文章标题
-
-> 原文链接: https://...
-
-正文内容...
 ```
 
-## ⚙️ 配置（首次使用前必须修改）
+## ⚙️ 配置
 
-> **⚠️ 脚本内置了个人 vault 路径，使用前必须改成你自己的！**
+所有配置集中在 `config.json`（可创建 `config.local.json` 覆盖本地设置）：
 
-编辑 `scripts/article_to_md.py`，找到顶部的这两行并修改：
+| 配置项 | 说明 |
+|--------|------|
+| `obsidian.vault_path` | Obsidian vault 根目录 |
+| `obsidian.inbox_dir` | inbox 子目录名 |
+| `failure.min_content_chars` | 低于此值自动保存链接存根（默认 2000） |
+| `failure.warn_content_chars` | 低于此值发出警告（默认 5000） |
+| `tags.preserve_case` | 保持原始大小写的标签名列表 |
+| `noise_patterns` | 要清除的噪音文本正则列表 |
 
-```python
-# 改成你自己的 Obsidian vault 根目录
-OBSIDIAN_VAULT = os.path.expanduser("~/Documents/MyObsidianVault")
-
-# vault 内的 inbox 子目录（默认 0-INBOX，可按需修改）
-INBOX_DIR = os.path.join(OBSIDIAN_VAULT, "0-INBOX")
-```
-
-常见路径参考：
-- 本地 vault: `~/Documents/你的vault名`
-- iCloud vault: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/你的vault名`
+标签关键词映射见 `tags_keyword_map.json`（可创建 `.local.json` 追加个人关键词）。
 
 ## 依赖
 
@@ -97,11 +85,3 @@ pip3 install requests beautifulsoup4 markdownify
 - ❌ 付费文章、被删除文章无法抓取
 - ⚠️ 频繁请求可能触发微信反爬，偶发失败时稍等重试即可
 - 图片保留微信 CDN 链接（不下载到本地）
-
-## 故障排查
-
-| 问题 | 解决方法 |
-|------|---------|
-| 文章内容为空 | URL 可能无效或文章已删除 |
-| 标题为"未命名文章" | 脚本未能提取标题，手动检查 URL |
-| 文件未出现在 Obsidian | 检查 `OBSIDIAN_VAULT` 路径是否正确 |
