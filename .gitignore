@@ -4,3 +4,5 @@ __pycache__/
 *.swp
 *.swo
 output/
+# 本地个性化配置，不推送
+SKILL.local.md

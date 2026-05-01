@@ -5,6 +5,8 @@ description: Convert WeChat Official Account (微信公众号) articles to Markd
 
 # WeChat to Obsidian Skill
 
+> 📌 如存在 `SKILL.local.md`，先读取其中的本地个性化规则（标签规范、失败处理等），再执行本文件中的通用流程。
+
 将微信公众号文章转换为 Markdown 格式，自动存入 Obsidian vault 的 `0-INBOX` 目录。
 
 ## 触发条件
