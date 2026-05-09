@@ -10,6 +10,8 @@ WeChat Article to Obsidian Converter
 - 抓取失败自动降级（字数不足 → 链接存根）
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import re
@@ -28,19 +30,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.dirname(SCRIPT_DIR)
 
 
-# ==================== 内置默认配置 ====================
+# ==================== 内置默认配置（仅作结构性兜底）====================
+# 真正的默认值在 config.json（仓库自带）。这里只保留 schema 形状，
+# 用于 config.json 缺失时让脚本仍能跑起来；策略性数据（preserve_case /
+# noise_patterns）特意留空，避免与 config.json 漂移。
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict = {
     "obsidian": {
         "vault_path": "~/Documents/MyObsidianVault",
         "inbox_dir": "0-INBOX",
     },
     "fetching": {
-        "user_agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "user_agent": "Mozilla/5.0 (compatible; wechat-to-obsidian)",
+        "accept": "*/*",
         "accept_language": "zh-CN,zh;q=0.9,en;q=0.8",
         "timeout": 30,
     },
@@ -51,21 +53,10 @@ DEFAULT_CONFIG = {
     },
     "tags": {
         "default": ["inbox", "article"],
-        "preserve_case": ["Anthropic", "OpenAI", "Google", "DeepSeek", "OpenClaw"],
+        "preserve_case": [],
         "auto_tag": True,
     },
-    "noise_patterns": [
-        "预览时标签不可点",
-        "继续滑动看下一个",
-        "轻触阅读原文",
-        "微信扫一扫",
-        "关注该公众号",
-        "点赞.*在看",
-        "分享.*收藏",
-        "喜欢此内容的人还喜欢",
-        "修改于",
-        "收录于合集",
-    ],
+    "noise_patterns": [],
 }
 
 # ==================== JSON 配置加载 ====================
@@ -129,7 +120,7 @@ def load_keyword_map() -> dict:
 # ==================== 标签处理 ====================
 
 
-def normalize_tag(tag: str, preserve_case: list) -> str:
+def normalize_tag(tag: str, preserve_case: list[str]) -> str:
     """按规范格式化单个标签"""
     if tag in preserve_case:
         return tag
@@ -148,7 +139,7 @@ def _keyword_matches(keyword: str, content: str) -> bool:
     return bool(re.search(pattern, content, re.IGNORECASE))
 
 
-def auto_tag(content: str, keyword_map: dict, preserve_case: list) -> list:
+def auto_tag(content: str, keyword_map: dict, preserve_case: list[str]) -> list[str]:
     """基于关键词匹配，自动推荐标签（已规范化）"""
     tags = set()
     for keyword, keyword_tags in keyword_map.get("keyword_tags", {}).items():
@@ -158,7 +149,7 @@ def auto_tag(content: str, keyword_map: dict, preserve_case: list) -> list:
     return sorted(tags)
 
 
-def build_tags(default_tags: list, auto_tags: list) -> list:
+def build_tags(default_tags: list[str], auto_tags: list[str]) -> list[str]:
     """合并默认标签 + 自动标签，去重，默认标签在前"""
     result = list(default_tags)
     for t in auto_tags:
@@ -205,7 +196,7 @@ def html_to_md(html_content: str) -> str:
     return markdownify(str(soup), heading_style="ATX", bullets="-")
 
 
-def clean_noise(text: str, patterns: list) -> str:
+def clean_noise(text: str, patterns: list[str]) -> str:
     """清理微信文章噪音"""
     compiled = [re.compile(p) for p in patterns]
     lines = text.split("\n")
@@ -240,7 +231,7 @@ def build_frontmatter(
     source_url: str,
     author: str = "",
     publish_date: str = "",
-    tags: list = None,
+    tags: list[str] | None = None,
 ) -> str:
     """构建 YAML frontmatter"""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -270,7 +261,16 @@ def build_frontmatter(
 
 
 def parse_wechat(html: str) -> dict:
-    """解析微信公众号文章 HTML"""
+    """解析微信公众号文章 HTML。
+
+    各字段使用降级链：先尝试服务端渲染时注入到 <script> 里的 JS 变量
+    （最准确），再退到 <meta>/标准标签。
+
+    - title:        var msg_title / var title  →  meta[og:title]  →  <title>
+    - author:       var nickname / var msg_source  →  meta[name=author]
+    - publish_date: var publish_time / ct / create_time（字符串或 Unix 时间戳）
+    - content:      div#js_content  →  div.rich_media_content  →  <body>
+    """
     soup = BeautifulSoup(html, "html.parser")
 
     # 标题（多种策略）
@@ -380,9 +380,66 @@ def is_wechat_url(url: str) -> bool:
     return any(host == h or host.endswith("." + h) for h in _WECHAT_HOSTS)
 
 
+def build_markdown_doc(
+    url: str,
+    config: dict,
+    keyword_map: dict,
+    no_auto_tag: bool = False,
+) -> dict:
+    """抓取并转换文章为完整 Markdown 文档（含 frontmatter）。
+
+    convert_article 和 --print 共用此函数。流程：
+    fetch → parse → html→md → 噪音清理 → 自动标签 → frontmatter
+    → 内容长度降级（短文落为链接存根）。
+
+    不写盘也不打印；网络异常会抛 RequestException 给调用方处理。
+    """
+    html = fetch_page(url, config)
+    article = parse_wechat(html)
+
+    body = html_to_md(article["content_html"])
+    body = clean_noise(body, config["noise_patterns"])
+
+    tags = list(config["tags"]["default"])
+    auto_tags: list[str] = []
+    if config["tags"].get("auto_tag", True) and not no_auto_tag:
+        auto_tags = auto_tag(body, keyword_map, config["tags"]["preserve_case"])
+        tags = build_tags(tags, auto_tags)
+
+    title = article["title"]
+    frontmatter = build_frontmatter(
+        title=title,
+        source_url=url,
+        author=article["author"],
+        publish_date=article["publish_date"],
+        tags=tags,
+    )
+    full_md = frontmatter + f"# {title}\n\n> 原文链接: {url}\n\n" + body
+
+    content_length = len(full_md)
+    is_stub = content_length < config["failure"]["min_content_chars"]
+    if is_stub:
+        full_md = frontmatter + (
+            f"# {title}\n\n"
+            f"⚠️ 无法抓取正文（仅 {content_length} 字符）\n\n"
+            f"原文链接: {url}\n"
+        )
+
+    return {
+        "article": article,
+        "tags": tags,
+        "auto_tags": auto_tags,
+        "frontmatter": frontmatter,
+        "body": body,
+        "full_md": full_md,
+        "is_stub": is_stub,
+        "content_length": content_length,
+    }
+
+
 def convert_article(
     url: str,
-    output_dir: str = None,
+    output_dir: str | None = None,
     dry_run: bool = False,
     no_auto_tag: bool = False,
 ) -> dict:
@@ -402,10 +459,9 @@ def convert_article(
         vault = os.path.expanduser(obsidian_cfg["vault_path"])
         output_dir = os.path.join(vault, obsidian_cfg["inbox_dir"])
 
-    print(f"📡 抓取: {url}")
-
+    print(f"📡 抓取并转换: {url}")
     try:
-        html = fetch_page(url, config)
+        doc = build_markdown_doc(url, config, keyword_map, no_auto_tag=no_auto_tag)
     except requests.exceptions.RequestException as e:
         return {
             "success": False,
@@ -413,95 +469,60 @@ def convert_article(
             "error_type": "fetch_failed",
         }
 
-    article = parse_wechat(html)
-
+    article = doc["article"]
     title = article["title"]
     print(f"📝 标题: {title}")
     if article["author"]:
         print(f"👤 公众号: {article['author']}")
     if article["publish_date"]:
         print(f"📅 发布时间: {article['publish_date']}")
+    if doc["auto_tags"]:
+        print(f"🏷️  自动标签: {doc['auto_tags']}")
 
-    print("🔄 转换 Markdown...")
-    md_body = html_to_md(article["content_html"])
-    md_body = clean_noise(md_body, config["noise_patterns"])
-
-    # ─── 自动标签 ───
-    tags = list(config["tags"]["default"])
-    auto_tags = []
-    use_auto_tag = config["tags"].get("auto_tag", True) and not no_auto_tag
-    if use_auto_tag:
-        auto_tags = auto_tag(md_body, keyword_map, config["tags"]["preserve_case"])
-        tags = build_tags(tags, auto_tags)
-        if auto_tags:
-            print(f"🏷️  自动标签: {auto_tags}")
-
-    # ─── 构建全文 ───
-    frontmatter = build_frontmatter(
-        title=title,
-        source_url=url,
-        author=article["author"],
-        publish_date=article["publish_date"],
-        tags=tags,
-    )
-    full_md = frontmatter + f"# {title}\n\n" + f"> 原文链接: {url}\n\n" + md_body
-
-    # ─── 内容长度判断（先于 dry_run，使预览反映降级行为）───
-    content_len = len(full_md)
     failure_cfg = config["failure"]
-    is_stub = False
-
-    if content_len < failure_cfg["min_content_chars"]:
-        print(f"⚠️  内容过短 ({content_len} 字符，阈值 {failure_cfg['min_content_chars']})")
-        stub_md = frontmatter + (
-            f"# {title}\n\n"
-            f"⚠️ 无法抓取正文（仅 {content_len} 字符）\n\n"
-            f"原文链接: {url}\n"
+    if doc["is_stub"]:
+        print(
+            f"⚠️  内容过短 ({doc['content_length']} 字符，"
+            f"阈值 {failure_cfg['min_content_chars']})"
         )
-        full_md = stub_md
-        is_stub = True
-    elif content_len < failure_cfg["warn_content_chars"]:
-        print(f"⚠️  内容偏少 ({content_len} 字符)，请人工审核")
+    elif doc["content_length"] < failure_cfg["warn_content_chars"]:
+        print(f"⚠️  内容偏少 ({doc['content_length']} 字符)，请人工审核")
 
     if dry_run:
         print("\n─── 预览（前 2000 字符）───")
-        if is_stub:
+        if doc["is_stub"]:
             print("（已触发降级，以下为存根内容）")
-        print(full_md[:2000])
+        print(doc["full_md"][:2000])
         return {
             "success": True,
             "dry_run": True,
-            "is_stub": is_stub,
-            "content_length": content_len,
-            "tags": tags,
-            "auto_tags": auto_tags,
+            "is_stub": doc["is_stub"],
+            "content_length": doc["content_length"],
+            "tags": doc["tags"],
+            "auto_tags": doc["auto_tags"],
         }
 
-    # ─── 生成文件名 ───
     date_str = article.get("publish_iso_date") or datetime.now().strftime("%Y-%m-%d")
-
     filename = f"{date_str}_{sanitize_filename(title)}.md"
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, filename)
-
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(full_md)
+        f.write(doc["full_md"])
 
-    # ─── 输出结构化结果 ───
-    print(f"\n{'⚠️  已保存链接存根' if is_stub else '✅ 已保存'}: {filepath}")
-    print(f"📊 字符数: {content_len}")
-    print(f"🏷️  最终标签: {tags}")
+    print(f"\n{'⚠️  已保存链接存根' if doc['is_stub'] else '✅ 已保存'}: {filepath}")
+    print(f"📊 字符数: {doc['content_length']}")
+    print(f"🏷️  最终标签: {doc['tags']}")
 
     return {
         "success": True,
-        "is_stub": is_stub,
+        "is_stub": doc["is_stub"],
         "title": title,
         "author": article["author"],
         "publish_date": article["publish_date"],
         "filepath": filepath,
-        "content_length": content_len,
-        "tags": tags,
-        "auto_tags": auto_tags,
+        "content_length": doc["content_length"],
+        "tags": doc["tags"],
+        "auto_tags": doc["auto_tags"],
     }
 
 
@@ -520,32 +541,16 @@ def main():
         if not is_wechat_url(args.url):
             print("❌ 不支持该链接，目前仅支持微信公众号文章 (mp.weixin.qq.com)", file=sys.stderr)
             sys.exit(1)
-
         config = load_json_config()
         keyword_map = load_keyword_map()
-
         try:
-            html = fetch_page(args.url, config)
+            doc = build_markdown_doc(
+                args.url, config, keyword_map, no_auto_tag=args.no_auto_tag
+            )
         except requests.exceptions.RequestException as e:
             print(f"❌ 抓取失败: {e}", file=sys.stderr)
             sys.exit(1)
-        article = parse_wechat(html)
-        md_body = html_to_md(article["content_html"])
-        md_body = clean_noise(md_body, config["noise_patterns"])
-
-        tags = list(config["tags"]["default"])
-        if config["tags"].get("auto_tag", True) and not args.no_auto_tag:
-            auto_tags = auto_tag(md_body, keyword_map, config["tags"]["preserve_case"])
-            tags = build_tags(tags, auto_tags)
-
-        fm = build_frontmatter(
-            title=article["title"],
-            source_url=args.url,
-            author=article["author"],
-            publish_date=article["publish_date"],
-            tags=tags,
-        )
-        print(fm + f"# {article['title']}\n\n" + f"> 原文链接: {args.url}\n\n" + md_body)
+        print(doc["full_md"])
     else:
         result = convert_article(
             args.url,

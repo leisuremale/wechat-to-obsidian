@@ -67,7 +67,7 @@ git clone https://github.com/leisuremale/wechat-to-obsidian.git \
   ~/.claude/skills/wechat-to-obsidian
 
 # 2. 安装依赖
-pip3 install requests beautifulsoup4 markdownify
+pip3 install -r requirements.txt
 
 # 3. 配置你的 Obsidian vault 路径
 #    编辑 config.json 中的 obsidian.vault_path

@@ -4,6 +4,7 @@ __pycache__/
 *.swp
 *.swo
 output/
+.pytest_cache/
 
 # 本地个性化配置，不推送到公开仓库
 SKILL.local.md
