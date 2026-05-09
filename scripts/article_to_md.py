@@ -140,11 +140,19 @@ def normalize_tag(tag: str, preserve_case: list) -> str:
     return tag.lower().replace(" ", "-")
 
 
+def _keyword_matches(keyword: str, content: str) -> bool:
+    """ASCII 关键词用词边界匹配；含非 ASCII（如中文）用子串匹配。"""
+    if re.search(r"[^\x00-\x7f]", keyword):
+        return keyword in content
+    pattern = r"(?<![A-Za-z0-9])" + re.escape(keyword) + r"(?![A-Za-z0-9])"
+    return bool(re.search(pattern, content, re.IGNORECASE))
+
+
 def auto_tag(content: str, keyword_map: dict, preserve_case: list) -> list:
     """基于关键词匹配，自动推荐标签（已规范化）"""
     tags = set()
     for keyword, keyword_tags in keyword_map.get("keyword_tags", {}).items():
-        if keyword.lower() in content.lower():
+        if _keyword_matches(keyword, content):
             for t in keyword_tags:
                 tags.add(normalize_tag(t, preserve_case))
     return sorted(tags)
@@ -165,7 +173,8 @@ def build_tags(default_tags: list, auto_tags: list) -> list:
 def sanitize_filename(name: str, max_length: int = 80) -> str:
     """清理文件名中的非法字符"""
     name = re.sub(r'[<>:"/\\|?*]', "_", name)
-    name = name.strip().strip(".")
+    name = re.sub(r"_+", "_", name)
+    name = name.strip().strip(".").strip("_")
     return name[:max_length] if len(name) > max_length else name
 
 
@@ -182,7 +191,7 @@ def fetch_page(url: str, config: dict) -> str:
         timeout=fc["timeout"],
     )
     resp.raise_for_status()
-    resp.encoding = resp.apparent_encoding or "utf-8"
+    resp.encoding = "utf-8"
     return resp.text
 
 
@@ -211,6 +220,21 @@ def clean_noise(text: str, patterns: list) -> str:
     return "\n".join(cleaned)
 
 
+_YAML_SPECIAL = re.compile(r'[",\[\]\{\}:&*#?|<>=!%@`\n\r\t]')
+
+
+def _yaml_quoted(s: str) -> str:
+    """JSON-encode for use as a YAML double-quoted scalar (safe escaping)."""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def _yaml_tag(tag: str) -> str:
+    """Quote a flow-array element only when it contains YAML-special chars."""
+    if not tag or _YAML_SPECIAL.search(tag) or tag != tag.strip():
+        return _yaml_quoted(tag)
+    return tag
+
+
 def build_frontmatter(
     title: str,
     source_url: str,
@@ -224,17 +248,17 @@ def build_frontmatter(
         tags = ["inbox", "article"]
     fm = [
         "---",
-        f'title: "{title}"',
+        f"title: {_yaml_quoted(title)}",
         f"source_url: {source_url}",
         "platform: wechat",
     ]
     if author:
-        fm.append(f"author: {author}")
+        fm.append(f"author: {_yaml_quoted(author)}")
     fm.append(f"publish_date: {publish_date or today}")
     fm.extend(
         [
             f"saved_date: {today}",
-            f"tags: [{', '.join(tags)}]",
+            "tags: [" + ", ".join(_yaml_tag(t) for t in tags) + "]",
             "---",
             "",
         ]
@@ -285,6 +309,7 @@ def parse_wechat(html: str) -> dict:
 
     # 发布时间（多种策略：字符串 + Unix 时间戳）
     publish_date = ""
+    publish_iso_date = ""
     for pattern in [
         r"var\s+publish_time\s*=\s*['\"](.+?)['\"]",
         r"var\s+ct\s*=\s*['\"](.+?)['\"]",
@@ -295,9 +320,15 @@ def parse_wechat(html: str) -> dict:
             ts = m.group(1).strip()
             try:
                 if ts.isdigit() and int(ts) > 1000000000:
-                    publish_date = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+                    dt = datetime.fromtimestamp(int(ts))
+                    publish_date = dt.strftime("%Y-%m-%d %H:%M")
+                    publish_iso_date = dt.strftime("%Y-%m-%d")
                 else:
                     publish_date = ts
+                    iso_match = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", ts)
+                    if iso_match:
+                        y, mo, d = iso_match.groups()
+                        publish_iso_date = f"{y}-{int(mo):02d}-{int(d):02d}"
             except (ValueError, OSError):
                 publish_date = ts
             break
@@ -324,6 +355,7 @@ def parse_wechat(html: str) -> dict:
         "title": title or "未命名文章",
         "author": author,
         "publish_date": publish_date,
+        "publish_iso_date": publish_iso_date,
         "content_html": content_html,
     }
 
@@ -331,19 +363,39 @@ def parse_wechat(html: str) -> dict:
 # ==================== 主流程 ====================
 
 
+_WECHAT_HOSTS = ("mp.weixin.qq.com", "weixin.qq.com")
+
+
 def is_wechat_url(url: str) -> bool:
-    """判断是否为微信公众号文章链接"""
-    domain = urlparse(url).netloc.lower()
-    return "mp.weixin.qq.com" in domain or "weixin.qq.com" in domain
+    """判断是否为微信公众号文章链接（精确域名匹配，防止子串绕过）"""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _WECHAT_HOSTS)
 
 
-def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> dict:
+def convert_article(
+    url: str,
+    output_dir: str = None,
+    dry_run: bool = False,
+    no_auto_tag: bool = False,
+) -> dict:
     """转换微信文章并保存到 Obsidian。返回结果字典供 LLM 报告使用。"""
     config = load_json_config()
     keyword_map = load_keyword_map()
 
     if not is_wechat_url(url):
-        return {"success": False, "error": f"不支持该链接，目前仅支持微信公众号文章 (mp.weixin.qq.com)"}
+        return {
+            "success": False,
+            "error": "不支持该链接，目前仅支持微信公众号文章 (mp.weixin.qq.com)",
+            "error_type": "unsupported_url",
+        }
 
     if output_dir is None:
         obsidian_cfg = config["obsidian"]
@@ -352,7 +404,15 @@ def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> 
 
     print(f"📡 抓取: {url}")
 
-    html = fetch_page(url, config)
+    try:
+        html = fetch_page(url, config)
+    except requests.exceptions.RequestException as e:
+        return {
+            "success": False,
+            "error": f"抓取失败: {e}",
+            "error_type": "fetch_failed",
+        }
+
     article = parse_wechat(html)
 
     title = article["title"]
@@ -368,7 +428,9 @@ def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> 
 
     # ─── 自动标签 ───
     tags = list(config["tags"]["default"])
-    if config["tags"].get("auto_tag", True):
+    auto_tags = []
+    use_auto_tag = config["tags"].get("auto_tag", True) and not no_auto_tag
+    if use_auto_tag:
         auto_tags = auto_tag(md_body, keyword_map, config["tags"]["preserve_case"])
         tags = build_tags(tags, auto_tags)
         if auto_tags:
@@ -384,12 +446,7 @@ def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> 
     )
     full_md = frontmatter + f"# {title}\n\n" + f"> 原文链接: {url}\n\n" + md_body
 
-    if dry_run:
-        print("\n─── 预览（前 2000 字符）───")
-        print(full_md[:2000])
-        return {"success": True, "dry_run": True}
-
-    # ─── 内容长度判断 ───
+    # ─── 内容长度判断（先于 dry_run，使预览反映降级行为）───
     content_len = len(full_md)
     failure_cfg = config["failure"]
     is_stub = False
@@ -406,10 +463,22 @@ def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> 
     elif content_len < failure_cfg["warn_content_chars"]:
         print(f"⚠️  内容偏少 ({content_len} 字符)，请人工审核")
 
+    if dry_run:
+        print("\n─── 预览（前 2000 字符）───")
+        if is_stub:
+            print("（已触发降级，以下为存根内容）")
+        print(full_md[:2000])
+        return {
+            "success": True,
+            "dry_run": True,
+            "is_stub": is_stub,
+            "content_length": content_len,
+            "tags": tags,
+            "auto_tags": auto_tags,
+        }
+
     # ─── 生成文件名 ───
-    date_str = article.get("publish_date", "")
-    dm = re.match(r"(\d{4}-\d{2}-\d{2})", date_str) if date_str else None
-    date_str = dm.group(1) if dm else datetime.now().strftime("%Y-%m-%d")
+    date_str = article.get("publish_iso_date") or datetime.now().strftime("%Y-%m-%d")
 
     filename = f"{date_str}_{sanitize_filename(title)}.md"
     os.makedirs(output_dir, exist_ok=True)
@@ -432,7 +501,7 @@ def convert_article(url: str, output_dir: str = None, dry_run: bool = False) -> 
         "filepath": filepath,
         "content_length": content_len,
         "tags": tags,
-        "auto_tags": auto_tags if config["tags"].get("auto_tag", True) else [],
+        "auto_tags": auto_tags,
     }
 
 
@@ -448,10 +517,18 @@ def main():
     args = parser.parse_args()
 
     if args.print:
+        if not is_wechat_url(args.url):
+            print("❌ 不支持该链接，目前仅支持微信公众号文章 (mp.weixin.qq.com)", file=sys.stderr)
+            sys.exit(1)
+
         config = load_json_config()
         keyword_map = load_keyword_map()
 
-        html = fetch_page(args.url, config)
+        try:
+            html = fetch_page(args.url, config)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ 抓取失败: {e}", file=sys.stderr)
+            sys.exit(1)
         article = parse_wechat(html)
         md_body = html_to_md(article["content_html"])
         md_body = clean_noise(md_body, config["noise_patterns"])
@@ -470,7 +547,12 @@ def main():
         )
         print(fm + f"# {article['title']}\n\n" + f"> 原文链接: {args.url}\n\n" + md_body)
     else:
-        result = convert_article(args.url, output_dir=args.output_dir, dry_run=args.dry_run)
+        result = convert_article(
+            args.url,
+            output_dir=args.output_dir,
+            dry_run=args.dry_run,
+            no_auto_tag=args.no_auto_tag,
+        )
         if not result["success"]:
             print(f"❌ {result['error']}", file=sys.stderr)
             sys.exit(1)
