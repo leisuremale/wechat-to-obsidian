@@ -24,6 +24,7 @@
 | **抓取失败降级** | ✅ 自动保存链接存根 | ❌ | ❌ | ❌ |
 | **JSON 驱动配置** | ✅ config.json | ❌ | ❌ | ❌ |
 | **最小化 LLM 步骤** | ✅ 只执行脚本+报告 | — | — | ⚠️ 多步 LLM 判断 |
+| **测试与质量保障** | ✅ 23 单元测试 + 类型注解 + 锁定依赖 | — | — | — |
 
 ### ✨ 核心优势
 
@@ -42,6 +43,17 @@
 7. **最小化 LLM 操作** — AI Agent 只需执行一条命令，脚本输出结构化结果直接转述。无需 LLM 判断标签、规范化格式、处理失败
 
 8. **AI Agent 友好** — 专为 Claude Code / OpenClaw 设计的 SKILL.md，AI 助手可直接理解并执行
+
+### 🔬 工程质量
+
+不少同类小工具是"能跑就行"，本 Skill 在 v2.1 做了系统化质量补强：
+
+- **单元测试** — `tests/test_pure.py` 共 23 个 pytest 用例，覆盖标签规范化、配置深度合并、文件名清理、URL 校验、关键词匹配、YAML 转义、文章解析全部纯函数
+- **类型注解** — 全函数签名带 `list[str]` / `dict` / `str | None`（`from __future__ import annotations` 兼容 Python 3.9+），IDE 跳转/补全友好
+- **依赖锁定** — `requirements.txt` 限定版本范围（`requests>=2.31,<3` 等），避免上游 markdownify 等破坏性更新引入隐性 bug
+- **安全考量** — URL 用 `urlparse.hostname` 精确域名匹配，杜绝 `evil.mp.weixin.qq.com.attacker.com` 子串绕过；YAML frontmatter 用 `json.dumps` 编码防注入；ASCII 关键词带词边界，`chatGPT4` 不再误中 `GPT`
+- **错误结构化** — 网络/解析失败返回 `{success: false, error_type: "fetch_failed", error: "..."}`，LLM 可直接转述给用户，不再抛非零退出 + traceback
+- **单一真源** — `config.json` 是默认值的唯一真源，脚本内的 `DEFAULT_CONFIG` 仅作结构性兜底（策略性数据特意留空），避免两份默认值漂移
 
 ### 设计哲学
 
@@ -193,6 +205,20 @@ wechat-to-obsidian/
 - 图片保留 CDN 链接，不下载到本地（离线不可见）
 
 ## 📝 更新日志
+
+### v2.1 (2026-05-09) — 可靠性强化与工程质量
+
+**针对系统化 Code Review 的 17 项落地修复 + 测试补强。**
+
+| 类别 | 更新 |
+|------|------|
+| 🛡️ **CLI 行为修复** | `--no-auto-tag` 在保存模式下生效（之前只在 `--print` 生效）；`auto_tags` 禁用时正确为空（修 `NameError`）；`--dry-run` 预览反映降级行为 |
+| 🔒 **安全加固** | URL 用 `urlparse.hostname` 精确匹配防子串绕过；YAML frontmatter 用 `json.dumps` 编码防注入；关键词匹配带词边界 |
+| ⚙️ **解析改进** | `parse_wechat` 新增 `publish_iso_date` 字段，文件名日期更可靠；统一 utf-8 编码避免 chardet 误判 |
+| 🌐 **错误结构化** | 网络异常包成 `{success: false, error_type: "fetch_failed"}`，LLM 直接转述，不再非零退出 + traceback |
+| 🧪 **测试覆盖** | 新增 `tests/test_pure.py` — 23 个 pytest 用例覆盖纯函数 |
+| 🏗️ **架构清理** | 抽出 `build_markdown_doc()` 让保存路径与 `--print` 共用流程；`DEFAULT_CONFIG` 缩为结构性兜底，`config.json` 是唯一真源 |
+| 📦 **依赖与类型** | `requirements.txt` 锁定版本范围；`from __future__ import annotations` + `list[str]` / `X \| None` 类型注解 |
 
 ### v2.0 (2026-05-01) — JSON 驱动 + 智能自动化
 
